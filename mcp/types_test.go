@@ -11,61 +11,73 @@ import (
 
 func TestMetaMarshalling(t *testing.T) {
 	tests := []struct {
-		name    string
-		json    string
-		meta    *Meta
-		expMeta *Meta
+		name       string
+		json       string
+		setupMeta  func() *Meta
+		expToken   ProgressToken
+		expFields  map[string]any
 	}{
 		{
-			name:    "empty",
-			json:    "{}",
-			meta:    &Meta{},
-			expMeta: &Meta{AdditionalFields: map[string]any{}},
+			name:      "empty",
+			json:      "{}",
+			setupMeta: func() *Meta { return &Meta{} },
+			expToken:  nil,
+			expFields: map[string]any{}, // Unmarshaling creates empty map, not nil
 		},
 		{
-			name:    "empty additional fields",
-			json:    "{}",
-			meta:    &Meta{AdditionalFields: map[string]any{}},
-			expMeta: &Meta{AdditionalFields: map[string]any{}},
+			name:      "empty additional fields",
+			json:      "{}",
+			setupMeta: func() *Meta { m := &Meta{}; m.SetAdditionalFields(map[string]any{}); return m },
+			expToken:  nil,
+			expFields: map[string]any{},
 		},
 		{
-			name:    "string token only",
-			json:    `{"progressToken":"123"}`,
-			meta:    &Meta{ProgressToken: "123"},
-			expMeta: &Meta{ProgressToken: "123", AdditionalFields: map[string]any{}},
+			name:      "string token only",
+			json:      `{"progressToken":"123"}`,
+			setupMeta: func() *Meta { return &Meta{ProgressToken: "123"} },
+			expToken:  "123",
+			expFields: map[string]any{}, // Unmarshaling creates empty map, not nil
 		},
 		{
-			name:    "string token only, empty additional fields",
-			json:    `{"progressToken":"123"}`,
-			meta:    &Meta{ProgressToken: "123", AdditionalFields: map[string]any{}},
-			expMeta: &Meta{ProgressToken: "123", AdditionalFields: map[string]any{}},
+			name:      "string token only, empty additional fields",
+			json:      `{"progressToken":"123"}`,
+			setupMeta: func() *Meta { m := &Meta{ProgressToken: "123"}; m.SetAdditionalFields(map[string]any{}); return m },
+			expToken:  "123",
+			expFields: map[string]any{},
 		},
 		{
-			name: "additional fields only",
-			json: `{"a":2,"b":"1"}`,
-			meta: &Meta{AdditionalFields: map[string]any{"a": 2, "b": "1"}},
+			name:      "additional fields only",
+			json:      `{"a":2,"b":"1"}`,
+			setupMeta: func() *Meta { m := &Meta{}; m.SetAdditionalFields(map[string]any{"a": 2, "b": "1"}); return m },
+			expToken:  nil,
 			// For untyped map, numbers are always float64
-			expMeta: &Meta{AdditionalFields: map[string]any{"a": float64(2), "b": "1"}},
+			expFields: map[string]any{"a": float64(2), "b": "1"},
 		},
 		{
-			name: "progress token and additional fields",
-			json: `{"a":2,"b":"1","progressToken":"123"}`,
-			meta: &Meta{ProgressToken: "123", AdditionalFields: map[string]any{"a": 2, "b": "1"}},
+			name:      "progress token and additional fields",
+			json:      `{"a":2,"b":"1","progressToken":"123"}`,
+			setupMeta: func() *Meta { m := &Meta{ProgressToken: "123"}; m.SetAdditionalFields(map[string]any{"a": 2, "b": "1"}); return m },
+			expToken:  "123",
 			// For untyped map, numbers are always float64
-			expMeta: &Meta{ProgressToken: "123", AdditionalFields: map[string]any{"a": float64(2), "b": "1"}},
+			expFields: map[string]any{"a": float64(2), "b": "1"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			data, err := json.Marshal(tc.meta)
+			meta := tc.setupMeta()
+
+			data, err := json.Marshal(meta)
 			require.NoError(t, err)
 			assert.Equal(t, tc.json, string(data))
 
-			meta := &Meta{}
-			err = json.Unmarshal([]byte(tc.json), meta)
+			unmarshaled := &Meta{}
+			err = json.Unmarshal([]byte(tc.json), unmarshaled)
 			require.NoError(t, err)
-			assert.Equal(t, tc.expMeta, meta)
+
+			// Compare fields individually since we can't directly compare structs with unexported fields
+			assert.Equal(t, tc.expToken, unmarshaled.ProgressToken)
+			assert.Equal(t, tc.expFields, unmarshaled.GetAdditionalFields())
 		})
 	}
 }
@@ -376,15 +388,14 @@ func TestParseResourceContentsInvalidMeta(t *testing.T) {
 }
 
 func TestMetaConcurrentAccess(t *testing.T) {
-	meta := &Meta{
-		AdditionalFields: make(map[string]any),
-	}
+	meta := &Meta{}
+	meta.SetAdditionalFields(make(map[string]any))
 
 	// Test concurrent writes and reads
 	var wg sync.WaitGroup
 	iterations := 100
 
-	// Concurrent writes
+	// Concurrent writes using SetAdditionalField
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -407,20 +418,15 @@ func TestMetaConcurrentAccess(t *testing.T) {
 		}()
 	}
 
-	// Concurrent direct map access (should still work but not recommended)
+	// Concurrent reads using GetAdditionalFields
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func(id int) {
+		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				meta.mu.Lock()
-				if meta.AdditionalFields == nil {
-					meta.AdditionalFields = make(map[string]any)
-				}
-				meta.AdditionalFields["direct"] = j
-				meta.mu.Unlock()
+				_ = meta.GetAdditionalFields()
 			}
-		}(i)
+		}()
 	}
 
 	wg.Wait()

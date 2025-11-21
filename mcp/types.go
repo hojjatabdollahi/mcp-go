@@ -131,9 +131,8 @@ type Cursor string
 // Meta is metadata attached to a request's parameters. This can include fields
 // formally defined by the protocol or other arbitrary data.
 //
-// Meta is safe for concurrent use. When modifying AdditionalFields concurrently,
-// use SetAdditionalField and GetAdditionalField methods, or synchronize access
-// yourself when accessing AdditionalFields directly.
+// Meta is safe for concurrent use. Use the provided accessor methods to safely
+// read and write additional fields.
 type Meta struct {
 	// If specified, the caller is requesting out-of-band progress
 	// notifications for this request (as represented by
@@ -143,14 +142,12 @@ type Meta struct {
 	// notifications.
 	ProgressToken ProgressToken
 
-	// AdditionalFields are any fields present in the Meta that are not
-	// otherwise defined in the protocol.
-	//
-	// When modifying this map concurrently, use SetAdditionalField or
-	// synchronize access yourself to avoid race conditions.
-	AdditionalFields map[string]any
+	// additionalFields are any fields present in the Meta that are not
+	// otherwise defined in the protocol. Access via GetAdditionalFields(),
+	// SetAdditionalFields(), GetAdditionalField(), or SetAdditionalField().
+	additionalFields map[string]any
 
-	// mu protects AdditionalFields from concurrent access
+	// mu protects additionalFields from concurrent access
 	mu sync.RWMutex
 }
 
@@ -159,11 +156,11 @@ func (m *Meta) MarshalJSON() ([]byte, error) {
 	if m.ProgressToken != nil {
 		raw["progressToken"] = m.ProgressToken
 	}
-	if m.AdditionalFields != nil {
+	if m.additionalFields != nil {
 		// Copy the map while holding a read lock to avoid concurrent map iteration/write issues
 		m.mu.RLock()
-		fieldsCopy := make(map[string]any, len(m.AdditionalFields))
-		for k, v := range m.AdditionalFields {
+		fieldsCopy := make(map[string]any, len(m.additionalFields))
+		for k, v := range m.additionalFields {
 			fieldsCopy[k] = v
 		}
 		m.mu.RUnlock()
@@ -181,7 +178,7 @@ func (m *Meta) UnmarshalJSON(data []byte) error {
 	m.ProgressToken = raw["progressToken"]
 	delete(raw, "progressToken")
 	m.mu.Lock()
-	m.AdditionalFields = raw
+	m.additionalFields = raw
 	m.mu.Unlock()
 	return nil
 }
@@ -200,30 +197,62 @@ func NewMetaFromMap(m map[string]any) *Meta {
 
 	return &Meta{
 		ProgressToken:    progressToken,
-		AdditionalFields: fieldsCopy,
+		additionalFields: fieldsCopy,
 	}
 }
 
-// SetAdditionalField safely sets a value in AdditionalFields.
+// GetAdditionalFields returns a copy of all additional fields.
+// This method is thread-safe and returns a snapshot of the fields at the time of call.
+func (m *Meta) GetAdditionalFields() map[string]any {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.additionalFields == nil {
+		return nil
+	}
+	// Return a copy to prevent external modification
+	result := make(map[string]any, len(m.additionalFields))
+	for k, v := range m.additionalFields {
+		result[k] = v
+	}
+	return result
+}
+
+// SetAdditionalFields sets all additional fields, replacing any existing fields.
+// This method is thread-safe.
+func (m *Meta) SetAdditionalFields(fields map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fields == nil {
+		m.additionalFields = nil
+		return
+	}
+	// Create a copy to prevent external modification
+	m.additionalFields = make(map[string]any, len(fields))
+	for k, v := range fields {
+		m.additionalFields[k] = v
+	}
+}
+
+// SetAdditionalField safely sets a value in additional fields.
 // This method is thread-safe and should be used when modifying Meta concurrently.
 func (m *Meta) SetAdditionalField(key string, value any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.AdditionalFields == nil {
-		m.AdditionalFields = make(map[string]any)
+	if m.additionalFields == nil {
+		m.additionalFields = make(map[string]any)
 	}
-	m.AdditionalFields[key] = value
+	m.additionalFields[key] = value
 }
 
-// GetAdditionalField safely gets a value from AdditionalFields.
+// GetAdditionalField safely gets a value from additional fields.
 // This method is thread-safe and should be used when reading Meta concurrently.
 func (m *Meta) GetAdditionalField(key string) (any, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if m.AdditionalFields == nil {
+	if m.additionalFields == nil {
 		return nil, false
 	}
-	value, ok := m.AdditionalFields[key]
+	value, ok := m.additionalFields[key]
 	return value, ok
 }
 
