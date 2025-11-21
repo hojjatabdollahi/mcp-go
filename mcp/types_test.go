@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -372,4 +373,56 @@ func TestParseResourceContentsInvalidMeta(t *testing.T) {
 			assert.Nil(t, resourceContent)
 		})
 	}
+}
+
+func TestMetaConcurrentAccess(t *testing.T) {
+	meta := &Meta{
+		AdditionalFields: make(map[string]any),
+	}
+
+	// Test concurrent writes and reads
+	var wg sync.WaitGroup
+	iterations := 100
+
+	// Concurrent writes
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				meta.SetAdditionalField("key", j)
+			}
+		}(i)
+	}
+
+	// Concurrent marshaling (reads)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_, err := json.Marshal(meta)
+				require.NoError(t, err)
+			}
+		}()
+	}
+
+	// Concurrent direct map access (should still work but not recommended)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				meta.mu.Lock()
+				if meta.AdditionalFields == nil {
+					meta.AdditionalFields = make(map[string]any)
+				}
+				meta.AdditionalFields["direct"] = j
+				meta.mu.Unlock()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	// If we get here without a panic, the concurrent access is safe
 }

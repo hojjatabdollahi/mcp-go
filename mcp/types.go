@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/yosida95/uritemplate/v3"
 )
@@ -129,6 +130,10 @@ type Cursor string
 
 // Meta is metadata attached to a request's parameters. This can include fields
 // formally defined by the protocol or other arbitrary data.
+//
+// Meta is safe for concurrent use. When modifying AdditionalFields concurrently,
+// use SetAdditionalField and GetAdditionalField methods, or synchronize access
+// yourself when accessing AdditionalFields directly.
 type Meta struct {
 	// If specified, the caller is requesting out-of-band progress
 	// notifications for this request (as represented by
@@ -140,7 +145,13 @@ type Meta struct {
 
 	// AdditionalFields are any fields present in the Meta that are not
 	// otherwise defined in the protocol.
+	//
+	// When modifying this map concurrently, use SetAdditionalField or
+	// synchronize access yourself to avoid race conditions.
 	AdditionalFields map[string]any
+
+	// mu protects AdditionalFields from concurrent access
+	mu sync.RWMutex
 }
 
 func (m *Meta) MarshalJSON() ([]byte, error) {
@@ -148,7 +159,16 @@ func (m *Meta) MarshalJSON() ([]byte, error) {
 	if m.ProgressToken != nil {
 		raw["progressToken"] = m.ProgressToken
 	}
-	maps.Copy(raw, m.AdditionalFields)
+	if m.AdditionalFields != nil {
+		// Copy the map while holding a read lock to avoid concurrent map iteration/write issues
+		m.mu.RLock()
+		fieldsCopy := make(map[string]any, len(m.AdditionalFields))
+		for k, v := range m.AdditionalFields {
+			fieldsCopy[k] = v
+		}
+		m.mu.RUnlock()
+		maps.Copy(raw, fieldsCopy)
+	}
 
 	return json.Marshal(raw)
 }
@@ -160,7 +180,9 @@ func (m *Meta) UnmarshalJSON(data []byte) error {
 	}
 	m.ProgressToken = raw["progressToken"]
 	delete(raw, "progressToken")
+	m.mu.Lock()
 	m.AdditionalFields = raw
+	m.mu.Unlock()
 	return nil
 }
 
@@ -170,10 +192,39 @@ func NewMetaFromMap(m map[string]any) *Meta {
 		delete(m, "progressToken")
 	}
 
+	// Create a copy of the map to avoid sharing the same map reference
+	fieldsCopy := make(map[string]any, len(m))
+	for k, v := range m {
+		fieldsCopy[k] = v
+	}
+
 	return &Meta{
 		ProgressToken:    progressToken,
-		AdditionalFields: m,
+		AdditionalFields: fieldsCopy,
 	}
+}
+
+// SetAdditionalField safely sets a value in AdditionalFields.
+// This method is thread-safe and should be used when modifying Meta concurrently.
+func (m *Meta) SetAdditionalField(key string, value any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.AdditionalFields == nil {
+		m.AdditionalFields = make(map[string]any)
+	}
+	m.AdditionalFields[key] = value
+}
+
+// GetAdditionalField safely gets a value from AdditionalFields.
+// This method is thread-safe and should be used when reading Meta concurrently.
+func (m *Meta) GetAdditionalField(key string) (any, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.AdditionalFields == nil {
+		return nil, false
+	}
+	value, ok := m.AdditionalFields[key]
+	return value, ok
 }
 
 type Request struct {
